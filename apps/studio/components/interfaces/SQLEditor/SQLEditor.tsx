@@ -1,14 +1,14 @@
 import { acceptUntrustedSql, untrustedSql, type UntrustedSqlFragment } from '@supabase/pg-meta'
 import { LOCAL_STORAGE_KEYS, useFlag, useParams } from 'common'
-import { Loader2 } from 'lucide-react'
-import dynamic from 'next/dynamic'
 import { useCallback, useEffect, useEffectEvent, useState } from 'react'
-import { cn, ResizableHandle, ResizablePanel, ResizablePanelGroup } from 'ui'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from 'ui'
 
 import { useSqlEditorDiff, useSqlEditorPrompt } from './hooks'
 import { RunQueryWarningModal } from './RunQueryWarningModal'
 import { appendEnableRLSStatements } from './SQLEditor.utils'
 import { SQLEditorProvider, useSQLEditorContext } from './SQLEditorContext'
+import { SQLEditorPane } from './SQLEditorPane'
+import { SQLEditorResults } from './SQLEditorResults'
 import { useAddDefinitions } from './useAddDefinitions'
 import { useEditorMount } from './useEditorMount'
 import { usePrettifyQuery } from './usePrettifyQuery'
@@ -19,8 +19,6 @@ import { useSqlEditorExecution } from './useSqlEditorExecution'
 import { useSqlEditorExplain } from './useSqlEditorExplain'
 import { useSqlEditorShortcuts } from './useSqlEditorShortcuts'
 import { UtilityActions } from './UtilityPanel/UtilityActions'
-import { UtilityPanel } from './UtilityPanel/UtilityPanel'
-import ResizableAIWidget from '@/components/ui/AIEditor/ResizableAIWidget'
 import { isValidConnString } from '@/data/fetchers'
 import { useReadReplicasQuery } from '@/data/read-replicas/replicas-query'
 import { useSelectedProjectQuery } from '@/hooks/misc/useSelectedProject'
@@ -32,21 +30,9 @@ import {
 } from '@/state/sql-editor/sql-editor-state'
 import { createTabId, useTabsStateSnapshot } from '@/state/tabs'
 
-// Load the monaco editor client-side only (does not behave well server-side)
-const MonacoEditor = dynamic(
-  () => import('./MonacoEditor').then(({ MonacoEditor }) => MonacoEditor),
-  { ssr: false }
-)
-const DiffEditor = dynamic(
-  () => import('../../ui/DiffEditor').then(({ DiffEditor }) => DiffEditor),
-  { ssr: false }
-)
-
 const SQLEditorContent = () => {
   const {
-    editorRef,
     monacoRef,
-    diffEditorRef,
     scrollTopRef,
     refocusEditor,
     clearPendingRunRefocus,
@@ -67,9 +53,9 @@ const SQLEditorContent = () => {
   const disablePrettyExplain = useFlag('DisablePrettyExplainOnSqlEditor')
 
   const diff = useSqlEditorDiff()
-  const { isDiffOpen, defaultSqlDiff } = diff
+  const { isDiffOpen } = diff
   const prompt = useSqlEditorPrompt()
-  const { promptState, setPromptState, promptInput, setPromptInput, resetPrompt } = prompt
+  const { promptState, resetPrompt } = prompt
 
   const [hasSelection, setHasSelection] = useState<boolean>(false)
   const [activeUtilityTab, setActiveUtilityTab] = useState<string>('results')
@@ -136,16 +122,8 @@ const SQLEditorContent = () => {
     if (sql !== undefined) void executeExplainQuery(acceptUntrustedSql(sql))
   }, [executeExplainQuery, readEditorSql])
 
-  const {
-    handlePrompt,
-    acceptAiHandler,
-    discardAiHandler,
-    onDebug,
-    buildDebugPrompt,
-    handleDiffEditorMount,
-    isCompletionLoading,
-    showWidget,
-  } = useSqlEditorAi({ id, editorMountCount, diff, prompt })
+  const ai = useSqlEditorAi({ id, editorMountCount, diff, prompt })
+  const { acceptAiHandler, discardAiHandler, onDebug, buildDebugPrompt } = ai
 
   useSqlEditorShortcuts({
     isDiffOpen,
@@ -180,6 +158,11 @@ const SQLEditorContent = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSuccessReadReplicas, databases, ref])
+
+  const snippetName =
+    urlId === 'new'
+      ? generatedNewSnippetName
+      : (snapV2.snippets[id]?.snippet.name ?? generatedNewSnippetName)
 
   return (
     <>
@@ -229,135 +212,39 @@ const SQLEditorContent = () => {
           autoSaveId={LOCAL_STORAGE_KEYS.SQL_EDITOR_SPLIT_SIZE}
         >
           <ResizablePanel defaultSize="50" maxSize="70">
-            <div className="grow overflow-y-auto border-b h-full">
-              {isLoading ? (
-                <div className="flex h-full w-full items-center justify-center">
-                  <Loader2 className="animate-spin text-brand" />
-                </div>
-              ) : (
-                <>
-                  {isDiffOpen && (
-                    <div className="w-full h-full">
-                      <DiffEditor
-                        language="pgsql"
-                        original={defaultSqlDiff.original}
-                        modified={defaultSqlDiff.modified}
-                        onMount={handleDiffEditorMount}
-                      />
-                      {showWidget && (
-                        <ResizableAIWidget
-                          editor={diffEditorRef.current!}
-                          id="ask-ai-diff"
-                          value={promptInput}
-                          onChange={setPromptInput}
-                          onSubmit={(prompt: string) => {
-                            handlePrompt(prompt, {
-                              beforeSelection: promptState.beforeSelection,
-                              selection: promptState.selection || defaultSqlDiff.modified,
-                              afterSelection: promptState.afterSelection,
-                            })
-                          }}
-                          onAccept={acceptAiHandler}
-                          onReject={discardAiHandler}
-                          onCancel={resetPrompt}
-                          isDiffVisible={true}
-                          isLoading={isCompletionLoading}
-                          startLineNumber={Math.max(0, promptState.startLineNumber)}
-                          endLineNumber={promptState.endLineNumber}
-                        />
-                      )}
-                    </div>
-                  )}
-                  <div key={id} className="w-full h-full relative">
-                    <MonacoEditor
-                      autoFocus
-                      placeholder={
-                        !promptState.isOpen && !editorRef.current?.getValue()
-                          ? 'Hit ' +
-                            (os === 'macos' ? 'CMD+SHIFT+K' : `CTRL+SHIFT+K`) +
-                            ' to generate query or just start typing'
-                          : ''
-                      }
-                      id={id}
-                      snippetName={
-                        urlId === 'new'
-                          ? generatedNewSnippetName
-                          : (snapV2.snippets[id]?.snippet.name ?? generatedNewSnippetName)
-                      }
-                      className={cn(isDiffOpen && 'hidden')}
-                      editorRef={editorRef}
-                      monacoRef={monacoRef}
-                      executeQuery={handleRunShortcut}
-                      executeExplainQuery={handleRunExplain}
-                      showExplainAction={!disablePrettyExplain}
-                      prettifyQuery={prettifyQuery}
-                      onHasSelection={setHasSelection}
-                      onMount={onMount}
-                      onPrompt={({
-                        selection,
-                        beforeSelection,
-                        afterSelection,
-                        startLineNumber,
-                        endLineNumber,
-                      }) => {
-                        setPromptState((prev) => ({
-                          ...prev,
-                          isOpen: true,
-                          selection,
-                          beforeSelection,
-                          afterSelection,
-                          startLineNumber,
-                          endLineNumber,
-                        }))
-                      }}
-                    />
-                    {editorRef.current && promptState.isOpen && !isDiffOpen && (
-                      <ResizableAIWidget
-                        editor={editorRef.current}
-                        id="ask-ai"
-                        value={promptInput}
-                        onChange={setPromptInput}
-                        onSubmit={(prompt: string) => {
-                          handlePrompt(prompt, {
-                            beforeSelection: promptState.beforeSelection,
-                            selection: promptState.selection,
-                            afterSelection: promptState.afterSelection,
-                          })
-                        }}
-                        onCancel={resetPrompt}
-                        isDiffVisible={false}
-                        isLoading={isCompletionLoading}
-                        startLineNumber={Math.max(0, promptState.startLineNumber)}
-                        endLineNumber={promptState.endLineNumber}
-                      />
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
+            <SQLEditorPane
+              id={id}
+              isLoading={isLoading}
+              os={os}
+              snippetName={snippetName}
+              disablePrettyExplain={disablePrettyExplain}
+              diff={diff}
+              prompt={prompt}
+              ai={ai}
+              onMount={onMount}
+              onRunShortcut={handleRunShortcut}
+              onRunExplain={handleRunExplain}
+              prettifyQuery={prettifyQuery}
+              onHasSelection={setHasSelection}
+            />
           </ResizablePanel>
 
           <ResizableHandle withHandle />
 
           <ResizablePanel defaultSize="50" maxSize="70">
-            {isLoading ? (
-              <div className="flex h-full w-full items-center justify-center">
-                <Loader2 className="animate-spin text-brand" />
-              </div>
-            ) : (
-              <UtilityPanel
-                id={id}
-                isExecuting={isExecuting}
-                isExplainExecuting={isExplainExecuting}
-                isDisabled={isDiffOpen}
-                executeExplainQuery={handleRunExplain}
-                showExplainTab={!disablePrettyExplain}
-                onDebug={onDebug}
-                buildDebugPrompt={buildDebugPrompt}
-                activeTab={activeUtilityTab}
-                onActiveTabChange={setActiveUtilityTab}
-              />
-            )}
+            <SQLEditorResults
+              isLoading={isLoading}
+              id={id}
+              isExecuting={isExecuting}
+              isExplainExecuting={isExplainExecuting}
+              isDisabled={isDiffOpen}
+              executeExplainQuery={handleRunExplain}
+              showExplainTab={!disablePrettyExplain}
+              onDebug={onDebug}
+              buildDebugPrompt={buildDebugPrompt}
+              activeTab={activeUtilityTab}
+              onActiveTabChange={setActiveUtilityTab}
+            />
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
